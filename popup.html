@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chrome Data Manager</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* Any class that sets display outranks the user agent rule for [hidden], so
+       a hidden panel, preview, or progress block would keep its box. This makes
+       the attribute authoritative, which is what popup.js toggles. */
+    [hidden] { display: none !important; }
+
+    /* The sprite must not take layout space. As a direct child of <body> it
+       gets display:inline and renders a 300x150 box, which shoves the header
+       150px down and reads as a mystery top margin. */
+    .sprite { display: none; }
+
+    /* Duolingo system: chunky radii, a solid bottom edge on every control, and a
+       press that sinks the key. Chrome palette: banana yellow accent, blue
+       primary, green and red for state. */
+
+    :root {
+      color-scheme: light;
+
+      --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+
+      --paper: #ffffff;
+      --surface: #f7f8fa;
+      --line: #e4e6ea;
+      --line-strong: #cdd0d6;
+      --ink: #1f1f1f;
+      --ink-soft: #6b6f76;
+
+      --banana: #fbbc04;
+      --banana-deep: #e2a400;
+      --banana-wash: #fef6e0;
+
+      /* Readable text on the banana wash. Every other tint pairs with a *-deep
+         ink; banana needs a hand-picked brown because its deep yellow fails
+         contrast against a light wash. */
+      --banana-ink: #7a5200;
+
+      --blue: #1a73e8;
+      --blue-deep: #1557b0;
+      --blue-hover: #2270dd;
+      --blue-wash: #e8f0fe;
+
+      --green: #188038;
+      --green-deep: #0f6428;
+      --green-wash: #e6f4ea;
+
+      --red: #d93025;
+      --red-deep: #a50e0e;
+      --red-wash: #fce8e6;
+
+      --r-control: 16px;
+      --r-card: 20px;
+      --r-pill: 999px;
+
+      /* A key that sits inside a shell, like a tab in the strip, cuts a smaller
+         radius than a free control so the two never read as one family. */
+      --r-key: 12px;
+
+      /* Spacing scale on a 4-unit base, then the roles this popup uses.
+         2 and 4 sit inside a control, 8 separates items in a row, 12 groups
+         blocks inside a band, 20 opens a band, 24 clears the viewport. */
+      --sp-1: 2px;
+      --sp-2: 4px;
+      --sp-3: 6px;
+      --sp-4: 8px;
+      --sp-5: 12px;
+      --sp-6: 16px;
+      --sp-7: 20px;
+      --sp-8: 24px;
+
+      --gutter: var(--sp-6);
+      --space-inside: var(--sp-3);
+      --space-group: var(--sp-5);
+      --space-band: var(--sp-7);
+      --space-viewport: var(--sp-8);
+
+      --pad-surface: var(--sp-5) var(--sp-6);
+
+      /* The bottom edge is the whole 3D effect in this design: a solid bar of
+         the deep tone under a solid face, never a cast shadow. --btn-edge is
+         for keys inside a shell, --btn-edge-lg for a free button. */
+      --btn-edge: 4px;
+      --btn-edge-lg: 5px;
+      --control-h: 48px;
+      --control-h-sm: 36px;
+      --icon-control: 18px;
+
+      /* Two motion speeds for everything: a colour change settles at 120ms, a
+         press travels at 70ms so the key reads as moving, not as recoloring. */
+      --motion-tint: 120ms;
+      --motion-press: 70ms;
+
+      /* A list row is 62px tall: 12px padding, a 20px name line, an 18px sub
+         line, 12px padding. The cap covers four whole rows plus the 2px borders
+         on each side. A cap that lands mid-row parks a sliced row on the fold
+         and reads as a bug. */
+      --row-h: 62px;
+      --preview-rows: 4;
+      --list-cap: calc(var(--preview-rows) * var(--row-h) + 2px * 2);
+    }
+
+    /* The root is the viewport and carries no scrollbar of its own. The window
+       never scrolls: the body is one fixed box, and the panel inside it is the
+       only thing that overflows. So there is no window track to reserve, and
+       no gutter to hand 11px back and forth as the user moves between tabs. */
+    html {
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    /* The popup is one fixed box: 440px wide, 600px tall, which are Chrome's
+       limits this design sits at. The body is what Chrome measures to size the
+       popup, and the column inside it keeps the masthead and the tab strip
+       pinned while the panel scrolls, so the popup never grows and the window
+       never scrolls.
+
+       440px is also the floor the tab strip needs: six equal keys holding six
+       whole labels on one line need 440px. At 360px an equal key is 48.2px and
+       "Bookmarks" would need a 7.6px label to fit it, and at 320px a 6.3px one,
+       which is unreadable. Fixing the width holds the floor, so the labels stay
+       legible and the keys stay equal, instead of trading one away for the
+       other. */
+    body {
+      display: flex;
+      flex-direction: column;
+      width: 440px;
+      height: 600px;
+      overflow: hidden;
+      font-family: var(--font-ui);
+      font-size: 14px;
+      line-height: 1.45;
+      letter-spacing: 0;
+      color: var(--ink);
+      background: var(--surface);
+      text-rendering: optimizeLegibility;
+      font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    ::selection { background: var(--banana-wash); color: var(--ink); }
+
+    /* The one scrollbar this popup owns sits on the root, so its track and
+       thumb come from the palette instead of reading as a platform leftover. */
+    * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+
+    :focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+
+    .icon {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 auto;
+      fill: currentColor;
+      stroke: none;
+    }
+
+    /* ── Masthead ─────────────────────────────────────────────────────── */
+
+    /* flex:0 0 auto keeps the masthead at its own height. As a flex child it
+       could otherwise be squeezed by a tall panel below it, and the pinned
+       chrome is the one part of the popup that must never move. */
+    .masthead {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: var(--sp-5);
+      padding: var(--sp-6) var(--gutter) 0;
+    }
+
+    .masthead-mark {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      border-radius: var(--r-key);
+      background: var(--banana);
+      color: var(--ink);
+      border-bottom: var(--btn-edge) solid var(--banana-deep);
+    }
+
+    .masthead-mark .icon { width: 20px; height: 20px; }
+    .masthead-text { min-width: 0; }
+
+    .masthead h1 {
+      font-size: 15px;
+      font-weight: 800;
+      line-height: 1.25;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+    }
+
+    .masthead p {
+      font-size: 12.5px;
+      font-weight: 500;
+      line-height: 1.35;
+      color: var(--ink-soft);
+    }
+
+    /* ── Tabs: one flat panel, the active key inverts into it ──────────── */
+
+    /* One background holds the whole list. The panel is flat, the way the
+       buttons are flat: a solid fill and a bottom edge, no gloss and no cast
+       shadow. Only the active key paints a face.
+
+       flex:0 0 auto keeps the strip at its own height. As a flex child it
+       could be squeezed by a tall panel below it, which squeezed the keys and
+       clipped their labels. */
+    .tabs {
+      display: flex;
+      flex: 0 0 auto;
+      gap: var(--sp-2);
+      margin: var(--space-band) var(--gutter) 0;
+      padding: var(--sp-2);
+      border: 2px solid var(--line);
+      border-radius: var(--r-control);
+      background: var(--surface);
+    }
+
+    /* Every key is the same width, so the strip reads as six siblings rather
+       than six columns sized to their own words. flex-basis:0 with flex-grow:1
+       is what makes them equal: each key starts at zero and takes an equal
+       share, so a long label never buys its key extra room.
+
+       The key and the label come from the same budget. At the 440px cap the
+       strip has 385px of inner width and the five gaps take 20px, so a key is
+       60.8px and its padding box is 56.8px. "Bookmarks" inks 58px at 11px, so
+       an 11px label does not fit a key with side padding. The side padding
+       goes to zero, which clears the border, and the gap between keys becomes
+       the only separation between labels. The label stays at 11px, because
+       10px is below the floor for text the user has to read and click.
+       min-width:0 with nowrap lets a key squeeze at a narrower popup while its
+       label stays whole, and the label clips rather than a key growing, so the
+       six stay equal at every width. */
+    .tab {
+      flex: 1 1 0;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--sp-1);
+      padding: var(--sp-4) 0;
+      border: 2px solid transparent;
+      border-bottom-width: var(--btn-edge);
+      border-radius: var(--r-key);
+      background: transparent;
+      color: var(--ink-soft);
+      font: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      cursor: pointer;
+      transition: background var(--motion-tint), color var(--motion-tint), transform var(--motion-press);
+    }
+
+    .tab .icon { width: var(--icon-control); height: var(--icon-control); }
+
+    .tab:hover { background: var(--banana-wash); color: var(--ink); }
+
+    /* The selected state. A solid banana fill, a hard bottom edge, and the
+       press sink that the buttons use. */
+    .tab.active {
+      background: var(--banana);
+      border-color: var(--banana-deep);
+      border-bottom-width: var(--btn-edge);
+      color: var(--ink);
+    }
+
+    .tab.active:hover { background: var(--banana); }
+
+    .tab:active {
+      transform: translateY(3px);
+      border-bottom-width: 2px;
+    }
+
+    /* ── Panel ────────────────────────────────────────────────────────── */
+
+    /* The panel is the one thing that scrolls, so the masthead and the tab
+       strip stay put and the popup never changes size. min-height:0 is what
+       lets a flex child shrink below its content instead of pushing the column
+       past the popup height, and that is what makes the scroll land here. */
+    .panel {
+      display: none;
+      flex-direction: column;
+      gap: var(--space-viewport);
+      min-height: 0;
+      padding: var(--space-band) var(--gutter) var(--space-viewport);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .panel.active {
+      display: flex;
+      flex: 1 1 auto;
+      animation: panel-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    /* A band holds blocks that answer one question. Inside a band the interval
+       is tight; between bands it opens to the full block step, so the eye finds
+       groups without reading a border. */
+    .band {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-group);
+    }
+
+    @keyframes panel-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    .panel-head {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-inside);
+    }
+
+    .panel-title {
+      font-size: 19px;
+      font-weight: 800;
+      line-height: 1.25;
+      letter-spacing: -0.015em;
+      color: var(--ink);
+      hyphens: none;
+    }
+
+    .section-desc {
+      max-width: 54ch;
+      font-size: 13.5px;
+      line-height: 1.5;
+      color: var(--ink-soft);
+      text-wrap: pretty;
+    }
+
+    /* ── Option cards ─────────────────────────────────────────────────── */
+
+    .options {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sp-4);
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-4);
+      padding: var(--pad-surface);
+      border: 2px solid var(--line);
+      border-radius: var(--r-control);
+      background: var(--paper);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+      transition: background var(--motion-tint), border-color var(--motion-tint);
+    }
+
+    .checkbox-row:hover { background: var(--banana-wash); border-color: var(--banana); }
+
+    /* The native input carries checked and indeterminate state. appearance:none
+       hides the platform widget and the marks are drawn on the input itself, so
+       no extra element is needed. One size serves every call site; a second
+       smaller copy only forced a second set of mark coordinates. */
+    input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      flex: 0 0 auto;
+      border: 2px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--paper);
+      cursor: pointer;
+      transition: background var(--motion-tint), border-color var(--motion-tint);
+    }
+
+    input[type="checkbox"]:hover { border-color: var(--blue); }
+
+    input[type="checkbox"]:checked,
+    input[type="checkbox"]:indeterminate {
+      background: var(--blue);
+      border-color: var(--blue-deep);
+    }
+
+    input[type="checkbox"]:checked::after {
+      content: "";
+      position: absolute;
+      left: 7px;
+      top: 1px;
+      width: 6px;
+      height: 13px;
+      border: solid #fff;
+      border-width: 0 3px 3px 0;
+      transform: rotate(42deg);
+    }
+
+    input[type="checkbox"]:indeterminate::after {
+      content: "";
+      position: absolute;
+      left: 4px;
+      top: 9.5px;
+      width: 12px;
+      height: 3px;
+      border-radius: 3px;
+      background: #fff;
+    }
+
+    input[type="checkbox"]:disabled { background: var(--line); border-color: var(--line); cursor: not-allowed; }
+
+    /* ── Buttons ──────────────────────────────────────────────────────── */
+
+    .actions {
+      display: flex;
+      gap: var(--sp-4);
+    }
+
+    .btn {
+      flex: 1 1 0;
+      min-width: 0;
+      height: var(--control-h);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--sp-4);
+      padding: 0 var(--sp-6);
+      border: 2px solid var(--line-strong);
+      border-bottom-width: var(--btn-edge-lg);
+      border-radius: var(--r-control);
+      background: var(--paper);
+      color: var(--ink);
+      font: inherit;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background var(--motion-tint), border-color var(--motion-tint), color var(--motion-tint), transform var(--motion-press);
+    }
+
+    .btn .icon { width: var(--icon-control); height: var(--icon-control); }
+
+    .btn:hover:not(:disabled) { background: var(--surface); }
+
+    /* The press sinks the key into the row gap. A matching margin here would
+       push the following block down by the same distance and cancel the
+       motion, so the gap alone carries it. */
+    .btn:active:not(:disabled) {
+      transform: translateY(3px);
+      border-bottom-width: 2px;
+    }
+
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--blue);
+      border-color: var(--blue-deep);
+      color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) { background: var(--blue-hover); }
+    .btn-primary:active:not(:disabled) { background: var(--blue); }
+
+    .btn-primary:disabled {
+      background: var(--line);
+      border-color: var(--line-strong);
+      color: var(--ink-soft);
+    }
+
+    /* ── Note ─────────────────────────────────────────────────────────── */
+
+    .note {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--sp-4);
+      padding: var(--pad-surface);
+      border: 2px solid var(--banana);
+      border-radius: var(--r-control);
+      background: var(--banana-wash);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.45;
+      text-wrap: pretty;
+    }
+
+    .note .icon { width: var(--icon-control); height: var(--icon-control); margin-top: 1px; }
+
+    /* ── Status ───────────────────────────────────────────────────────── */
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-4);
+      padding: var(--pad-surface);
+      border: 2px solid var(--line);
+      border-radius: var(--r-control);
+      background: var(--paper);
+      color: var(--ink-soft);
+      font-size: 13.5px;
+      font-weight: 600;
+      line-height: 1.45;
+      text-wrap: pretty;
+    }
+
+    /* The status reports on the band above it, so it sits one step further out
+       than the controls it reports about. An empty status collapses to nothing
+       and the interval disappears with it, which is why no state class
+       carries its own margin. */
+    .band > .status { margin-top: var(--sp-2); }
+    .status:empty { display: none; }
+    .status .icon { width: var(--icon-control); height: var(--icon-control); }
+
+    .status.loading {
+      background: var(--blue-wash);
+      border-color: var(--blue);
+      color: var(--blue-deep);
+    }
+
+    .status.success { background: var(--green-wash); border-color: var(--green); color: var(--green-deep); }
+    .status.error { background: var(--red-wash); border-color: var(--red); color: var(--red-deep); }
+    .status.warn { background: var(--banana-wash); border-color: var(--banana-deep); color: var(--banana-ink); }
+
+    .spinner {
+      width: var(--icon-control);
+      height: var(--icon-control);
+      flex: 0 0 auto;
+      border: 3px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 640ms linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(1turn); } }
+
+    /* ── Progress ─────────────────────────────────────────────────────── */
+
+    .progress-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sp-2);
+    }
+
+    .progress-label {
+      display: flex;
+      justify-content: space-between;
+      gap: var(--sp-4);
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--ink-soft);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .progress-bar {
+      height: 14px;
+      padding: var(--sp-1);
+      border: 2px solid var(--line-strong);
+      border-radius: var(--r-pill);
+      background: var(--paper);
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 100%;
+      border-radius: var(--r-pill);
+      background: var(--green);
+      transform: scaleX(0);
+      transform-origin: left center;
+      transition: transform 250ms cubic-bezier(0.2, 0, 0, 1);
+    }
+
+    /* ── Preview ──────────────────────────────────────────────────────── */
+
+    .preview {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sp-4);
+    }
+
+    .preview-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--sp-4);
+    }
+
+    .select-all {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--sp-4);
+      min-height: var(--control-h-sm);
+      padding: var(--sp-2) var(--sp-5);
+      border: 2px solid var(--line);
+      border-radius: var(--r-pill);
+      font-size: 13.5px;
+      font-weight: 700;
+      color: var(--ink);
+      cursor: pointer;
+      transition: background var(--motion-tint), border-color var(--motion-tint);
+    }
+
+    .select-all:hover { background: var(--banana-wash); border-color: var(--banana); }
+
+    .select-all input[type="checkbox"] { margin: 0; }
+
+    .preview-count {
+      display: inline-flex;
+      align-items: center;
+      min-height: var(--control-h-sm);
+      padding: var(--sp-2) var(--sp-5);
+      border: 2px solid var(--blue);
+      border-radius: var(--r-pill);
+      background: var(--blue-wash);
+      color: var(--blue-deep);
+      font-size: 12.5px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .preview-list {
+      max-height: var(--list-cap);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      border: 2px solid var(--line);
+      border-radius: var(--r-card);
+      background: var(--paper);
+      scrollbar-gutter: stable;
+    }
+
+    .ext-item {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-4);
+      min-height: var(--row-h);
+      padding: var(--space-group) var(--sp-6);
+      cursor: pointer;
+      transition: background var(--motion-tint);
+    }
+
+    .ext-item + .ext-item { border-top: 2px solid var(--line); }
+    .ext-item:hover { background: var(--banana-wash); }
+
+    .ext-meta {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Two fixed line boxes plus the row padding give the row a height the list
+       cap can divide. A fractional line box would drift the fold. */
+    .ext-name {
+      height: 20px;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 20px;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .ext-sub {
+      height: 18px;
+      font-size: 12.5px;
+      font-weight: 500;
+      line-height: 18px;
+      color: var(--ink-soft);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .ext-badge {
+      flex: 0 0 auto;
+      align-self: center;
+      padding: var(--sp-1) var(--sp-5);
+      border: 2px solid var(--line);
+      border-radius: var(--r-pill);
+      background: var(--surface);
+      color: var(--ink-soft);
+      font-size: 11.5px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    .ext-badge.change {
+      border-color: var(--green);
+      background: var(--green-wash);
+      color: var(--green-deep);
+    }
+
+    .ext-badge.missing {
+      border-color: var(--red);
+      background: var(--red-wash);
+      color: var(--red-deep);
+    }
+
+    /* ── Field row ────────────────────────────────────────────────────── */
+
+    .field-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--sp-4);
+    }
+
+    .field-row label {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    /* A text field in this design language: the same 2px line and hard bottom
+       edge every other control wears, with the interior carrying the value.
+       The native spinner is hidden, because a platform-drawn up/down pair does
+       not belong to this palette. */
+    .field {
+      position: relative;
+      display: flex;
+      align-items: center;
+      width: 116px;
+      height: var(--control-h);
+      border: 2px solid var(--line-strong);
+      border-bottom-width: var(--btn-edge);
+      border-radius: var(--r-control);
+      background: var(--paper);
+      transition: border-color var(--motion-tint);
+    }
+
+    .field:hover { border-color: var(--blue); }
+
+    /* Focus lands on the shell, not the inner input, so the ring wraps the
+       whole control instead of drawing inside it. */
+    .field:focus-within {
+      border-color: var(--blue);
+      outline: 3px solid var(--blue-wash);
+      outline-offset: 2px;
+    }
+
+    /* appearance:none drops the platform frame, and the two pseudo-elements
+       drop the platform spinner, because the stepper pair below replaces it
+       and the two must never paint at once. The right padding reserves the
+       stepper column, which keeps the caret off the chevrons. */
+    .field input {
+      appearance: none;
+      width: 100%;
+      min-width: 0;
+      height: 100%;
+      padding: 0 30px 0 var(--sp-5);
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      font: inherit;
+      font-size: 15px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    .field input::-webkit-outer-spin-button,
+    .field input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    .field input:focus { outline: none; }
+
+    /* The stepper is a two-cell column inside the shell, so the pair is one
+       control that reads as a unit. Each cell takes half the interior height,
+       which leaves the caret clear of both and keeps the two marks apart. */
+    .field-step {
+      position: absolute;
+      right: var(--sp-1);
+      width: 24px;
+      height: 18px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--ink-soft);
+      cursor: pointer;
+      transition: background var(--motion-tint), color var(--motion-tint);
+    }
+
+    .field-step .icon { width: 12px; height: 12px; }
+
+    /* One rule splits the two cells, so the pair reads as a single key with a
+       divider instead of two loose marks and a stray line between them. The
+       upper cell rounds at the top only and the lower at the bottom only. */
+    .field-step.up {
+      top: var(--sp-1);
+      border-radius: 6px 6px 0 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .field-step.down {
+      bottom: var(--sp-1);
+      border-radius: 0 0 6px 6px;
+    }
+
+    .field-step:hover:not(:disabled) { background: var(--banana-wash); color: var(--ink); }
+
+    .field-step:disabled { color: var(--line-strong); cursor: not-allowed; }
+
+    /* ── FAQ ─────────────────────────────────────────────────────────── */
+
+    /* One flat stack per question: a key on top, its answer card below. The
+       key and the card are siblings, so the answer opens downward out of the
+       key instead of stretching the key to cover it. */
+    .faq {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sp-4);
+    }
+
+    /* The card is the answer, the key is the question. The key carries the
+       whole 3D effect: a solid face over a hard bottom edge, which sinks 3px
+       and loses the edge on press. The card only opens up. */
+    .faq-item { display: flex; flex-direction: column; gap: var(--sp-3); }
+
+    .faq-q {
+      display: flex;
+      align-items: center;
+      gap: var(--sp-4);
+      width: 100%;
+      min-height: var(--control-h);
+      padding: var(--sp-4) var(--sp-5);
+      border: 2px solid var(--line-strong);
+      border-bottom-width: var(--btn-edge);
+      border-radius: var(--r-control);
+      background: var(--paper);
+      color: var(--ink);
+      font: inherit;
+      font-size: 13.5px;
+      font-weight: 700;
+      text-align: left;
+      cursor: pointer;
+      transition: background var(--motion-tint), border-color var(--motion-tint), color var(--motion-tint), transform var(--motion-press);
+    }
+
+    /* The native marker would print a triangle inside the key, so it goes and
+       the caret icon takes its place. */
+    .faq-q::-webkit-details-marker { display: none; }
+    .faq-q { list-style: none; }
+
+    .faq-q:hover { background: var(--banana-wash); border-color: var(--banana); }
+
+    .faq-item[open] .faq-q { background: var(--banana); border-color: var(--banana-deep); }
+
+    .faq-item[open] .faq-q:hover { background: var(--banana); }
+
+    /* The sink. No matching margin: the row gap below the key already opens by
+       the same distance, so a margin would cancel the motion. */
+    .faq-q:active {
+      transform: translateY(3px);
+      border-bottom-width: 2px;
+    }
+
+    /* The question label takes the room; the caret is the only fixed part, so
+       a long question wraps under itself and the mark stays on the right. */
+    .faq-q span { flex: 1 1 auto; min-width: 0; }
+
+    .faq-q .icon {
+      width: var(--icon-control);
+      height: var(--icon-control);
+      flex: 0 0 auto;
+      color: var(--ink-soft);
+      transition: transform var(--motion-tint), color var(--motion-tint);
+    }
+
+    .faq-item[open] .faq-q .icon { transform: rotate(180deg); color: var(--banana-ink); }
+
+    /* The answer sits under the key in its own card, so the key never stretches
+       to cover a long answer and the edge above the text stays readable. */
+    .faq-a {
+      padding: var(--sp-5);
+      border: 2px solid var(--line);
+      border-radius: var(--r-control);
+      background: var(--paper);
+      font-size: 13px;
+      font-weight: 500;
+      line-height: 1.5;
+      color: var(--ink-soft);
+      text-wrap: pretty;
+    }
+
+    .faq-a p + p { margin-top: var(--sp-3); }
+
+    .faq-a code {
+      padding: 0 3px;
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--ink);
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: 12.5px;
+    }
+  </style>
+</head>
+<body>
+
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-alert" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M12 1.67c.955 0 1.845.467 2.39 1.247l.105.16l8.114 13.548a2.914 2.914 0 0 1-2.307 4.363l-.195.008H3.882a2.914 2.914 0 0 1-2.582-4.2l.099-.185l8.11-13.538A2.91 2.91 0 0 1 12 1.67M12.01 15l-.127.007a1 1 0 0 0 0 1.986L12 17l.127-.007a1 1 0 0 0 0-1.986zM12 8a1 1 0 0 0-.993.883L11 9v4l.007.117a1 1 0 0 0 1.986 0L13 13V9l-.007-.117A1 1 0 0 0 12 8"/>
+    </symbol>
+    <symbol id="i-bookmark" viewBox="0 0 256 256">
+      <path fill="currentColor" d="M184 32H72a16 16 0 0 0-16 16v176a8 8 0 0 0 12.24 6.78L128 193.43l59.77 37.35A8 8 0 0 0 200 224V48a16 16 0 0 0-16-16m-51.77 145.22a8 8 0 0 0-8.48 0L72 209.57v-29.14l56-35l56 35v29.14Z"/>
+    </symbol>
+    <symbol id="i-caret" viewBox="0 0 256 256">
+      <path fill="currentColor" d="m213.66 101.66l-80 80a8 8 0 0 1-11.32 0l-80-80A8 8 0 0 1 48 88h160a8 8 0 0 1 5.66 13.66"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M17 3.34a10 10 0 1 1-14.995 8.984L2 12l.005-.324A10 10 0 0 1 17 3.34m-1.293 5.953a1 1 0 0 0-1.32-.083l-.094.083L11 12.585l-1.293-1.292l-.094-.083a1 1 0 0 0-1.403 1.403l.083.094l2 2l.094.083a1 1 0 0 0 1.226 0l.094-.083l4-4l.083-.094a1 1 0 0 0-.083-1.32"/>
+    </symbol>
+    <symbol id="i-close" viewBox="0 0 256 256">
+      <path fill="currentColor" d="M205.66 194.34a8 8 0 0 1-11.32 11.32L128 139.31l-66.34 66.35a8 8 0 0 1-11.32-11.32L116.69 128L50.34 61.66a8 8 0 0 1 11.32-11.32L128 116.69l66.34-66.35a8 8 0 0 1 11.32 11.32L139.31 128Z"/>
+    </symbol>
+    <symbol id="i-cookie" viewBox="0 0 256 256">
+      <path fill="currentColor" d="M224 120a40 40 0 0 1-40-40a8 8 0 0 0-8-8a40 40 0 0 1-40-40a8 8 0 0 0-8-8a104 104 0 1 0 104 104a8 8 0 0 0-8-8M75.51 99.51a12 12 0 1 1 0 17a12 12 0 0 1 0-17m25 73a12 12 0 1 1 0-17a12 12 0 0 1-.02 16.98Zm23-40a12 12 0 1 1 17 0a12 12 0 0 1-17-.02Zm41 48a12 12 0 1 1 0-17a12 12 0 0 1-.02 16.98Z"/>
+    </symbol>
+    <symbol id="i-error" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M17 3.34a10 10 0 1 1-14.995 8.984L2 12l.005-.324A10 10 0 0 1 17 3.34m-6.489 5.8a1 1 0 0 0-1.218 1.567L10.585 12l-1.292 1.293l-.083.094a1 1 0 0 0 1.497 1.32L12 13.415l1.293 1.292l.094.083a1 1 0 0 0 1.32-1.497L13.415 12l1.292-1.293l.083-.094a1 1 0 0 0-1.497-1.32L12 10.585l-1.293-1.292l-.094-.083z"/>
+    </symbol>
+    <symbol id="i-export" viewBox="0 0 256 256">
+      <path fill="currentColor" d="M216 112v96a16 16 0 0 1-16 16H56a16 16 0 0 1-16-16v-96a16 16 0 0 1 16-16h24a8 8 0 0 1 0 16H56v96h144v-96h-24a8 8 0 0 1 0-16h24a16 16 0 0 1 16 16M93.66 69.66L120 43.31V136a8 8 0 0 0 16 0V43.31l26.34 26.35a8 8 0 0 0 11.32-11.32l-40-40a8 8 0 0 0-11.32 0l-40 40a8 8 0 0 0 11.32 11.32"/>
+    </symbol>
+    <symbol id="i-faq" viewBox="0 0 256 256">
+      <path fill="currentColor" d="M128 24a104 104 0 1 0 104 104A104.11 104.11 0 0 0 128 24m0 168a12 12 0 1 1 12-12a12 12 0 0 1-12 12m8-48.72v.72a8 8 0 0 1-16 0v-8a8 8 0 0 1 8-8c13.23 0 24-9 24-20s-10.77-20-24-20s-24 9-24 20v4a8 8 0 0 1-16 0v-4c0-19.85 17.94-36 40-36s40 16.15 40 36c0 17.38-13.76 31.93-32 35.28"/>
+    </symbol>
+    <symbol id="i-history" viewBox="0 0 256 256">
+      <path fill="currentColor" d="M128 24a104 104 0 1 0 104 104A104.11 104.11 0 0 0 128 24m56 112h-56a8 8 0 0 1-8-8V72a8 8 0 0 1 16 0v48h48a8 8 0 0 1 0 16"/>
+    </symbol>
+    <symbol id="i-import" viewBox="0 0 256 256">
+      <path fill="currentColor" d="M208 32H48a16 16 0 0 0-16 16v160a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16m0 16v104h-28.7a15.86 15.86 0 0 0-11.3 4.69L148.69 176h-41.38L88 156.69A15.86 15.86 0 0 0 76.69 152H48V48Zm0 160H48v-40h28.69L96 187.31a15.86 15.86 0 0 0 11.31 4.69h41.38a15.86 15.86 0 0 0 11.31-4.69L179.31 168H208zM90.34 125.66a8 8 0 0 1 11.32-11.32L120 132.69V72a8 8 0 0 1 16 0v60.69l18.34-18.35a8 8 0 0 1 11.32 11.32l-32 32a8 8 0 0 1-11.32 0Z"/>
+    </symbol>
+    <symbol id="i-info" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M12 2c5.523 0 10 4.477 10 10a10 10 0 0 1-19.995.324L2 12l.004-.28C2.152 6.327 6.57 2 12 2m0 9h-1l-.117.007a1 1 0 0 0 0 1.986L11 13v3l.007.117a1 1 0 0 0 .876.876L12 17h1l.117-.007a1 1 0 0 0 .876-.876L14 16l-.007-.117a1 1 0 0 0-.764-.857l-.112-.02L13 15v-3l-.007-.117a1 1 0 0 0-.876-.876zm.01-3l-.127.007a1 1 0 0 0 0 1.986L12 10l.127-.007a1 1 0 0 0 0-1.986z"/>
+    </symbol>
+    <symbol id="i-puzzle" viewBox="0 0 256 256">
+      <path fill="currentColor" d="M176 56H80a72 72 0 0 0 0 144h96a72 72 0 0 0 0-144M80 168a40 40 0 1 1 40-40a40 40 0 0 1-40 40"/>
+    </symbol>
+    <symbol id="i-storage" viewBox="0 0 256 256">
+      <path fill="currentColor" d="M208 40H48a16 16 0 0 0-16 16v48a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16V56a16 16 0 0 0-16-16m-28 52a12 12 0 1 1 12-12a12 12 0 0 1-12 12m28 44H48a16 16 0 0 0-16 16v48a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16v-48a16 16 0 0 0-16-16m-28 52a12 12 0 1 1 12-12a12 12 0 0 1-12 12"/>
+    </symbol>
+    <symbol id="i-sync" viewBox="0 0 512 512">
+      <path fill="currentColor" d="m426.645 273.941l.022 99.392l-170.667 96l-170.667-96l-.021-97.749l42.667 24.939l.021 47.85l106.667 59.99l-.022-74.027l21.502-13.189l21.165 13.018l.021 74.198L384 348.352l-.021-49.493zM208.019 57.681l47.391 27.99l.59-.338l.263.146l44.881-26.492l179.404 104.569l-45.042 27.651l45.05 26.593l-180.519 105.42l-44.008-27.032l-45.39 27.898l-180.518-105.42l46.046-27.203l-47.552-29.212zM406.934 192l-151.039-83.072L107.892 192l148.003 83.072z"/>
+    </symbol>
+    <!-- Up and down are the caret path and its mirror, so a step reads with the
+       same mark the FAQ disclosure uses. -->
+    <symbol id="i-up" viewBox="0 0 256 256">
+      <path fill="currentColor" d="m213.66 154.34-80-80a8 8 0 0 0-11.32 0l-80 80A8 8 0 0 0 48 168h160a8 8 0 0 0 5.66-13.66"/>
+    </symbol>
+    <symbol id="i-down" viewBox="0 0 256 256">
+      <path fill="currentColor" d="m213.66 101.66-80 80a8 8 0 0 1-11.32 0l-80-80A8 8 0 0 1 48 88h160a8 8 0 0 1 5.66 13.66"/>
+    </symbol>
+  </defs>
+</svg>
+
+<header class="masthead">
+  <span class="masthead-mark">
+    <svg class="icon"><use href="#i-sync"></use></svg>
+  </span>
+  <div class="masthead-text">
+    <h1>Chrome Data Manager</h1>
+    <p>Import and export browser data</p>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button class="tab active" data-tab="extensions" role="tab" aria-selected="true" aria-controls="panel-extensions">
+    <svg class="icon"><use href="#i-puzzle"></use></svg>Extensions
+  </button>
+  <button class="tab" data-tab="bookmarks" role="tab" aria-selected="false" aria-controls="panel-bookmarks">
+    <svg class="icon"><use href="#i-bookmark"></use></svg>Bookmarks
+  </button>
+  <button class="tab" data-tab="history" role="tab" aria-selected="false" aria-controls="panel-history">
+    <svg class="icon"><use href="#i-history"></use></svg>History
+  </button>
+  <button class="tab" data-tab="cookies" role="tab" aria-selected="false" aria-controls="panel-cookies">
+    <svg class="icon"><use href="#i-cookie"></use></svg>Cookies
+  </button>
+  <button class="tab" data-tab="storage" role="tab" aria-selected="false" aria-controls="panel-storage">
+    <svg class="icon"><use href="#i-storage"></use></svg>Storage
+  </button>
+  <button class="tab" data-tab="faq" role="tab" aria-selected="false" aria-controls="panel-faq">
+    <svg class="icon"><use href="#i-faq"></use></svg>FAQ
+  </button>
+</nav>
+
+<!-- EXTENSIONS -->
+<section class="panel active" id="panel-extensions" role="tabpanel">
+  <div class="panel-head">
+    <h2 class="panel-title">Extension states</h2>
+    <p class="section-desc">Export every installed extension with its enabled state, then pick which ones to change on import.</p>
+  </div>
+  <div class="band">
+    <div class="options">
+      <label class="checkbox-row">
+        <input type="checkbox" id="ext-include-disabled" checked>
+        <span>Include disabled extensions</span>
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" id="ext-include-chrome" checked>
+        <span>Include built-in Chrome extensions</span>
+      </label>
+    </div>
+    <div class="actions" id="ext-start">
+      <button class="btn" id="ext-export">
+        <svg class="icon"><use href="#i-export"></use></svg>Export
+      </button>
+      <button class="btn btn-primary" id="ext-import">
+        <svg class="icon"><use href="#i-import"></use></svg>Import
+      </button>
+    </div>
+    <div class="preview" id="ext-preview" hidden>
+      <div class="preview-head">
+        <label class="select-all">
+          <input type="checkbox" id="ext-select-all" checked>
+          <span>Select all</span>
+        </label>
+        <span class="preview-count" id="ext-preview-count">0 of 0</span>
+      </div>
+      <div class="preview-list" id="ext-preview-list"></div>
+      <div class="actions">
+        <button class="btn" id="ext-cancel">
+          <svg class="icon"><use href="#i-close"></use></svg>Cancel
+        </button>
+        <button class="btn btn-primary" id="ext-apply">
+          <svg class="icon"><use href="#i-import"></use></svg><span class="btn-label">Import</span>
+        </button>
+      </div>
+    </div>
+    <p class="note">
+      <svg class="icon"><use href="#i-info"></use></svg>
+      <span>Chrome blocks installing extensions from a script, so import can only enable or disable extensions you already have.</span>
+    </p>
+    <div class="status idle" id="ext-status" role="status" aria-live="polite"></div>
+  </div>
+  <input type="file" id="ext-file" accept=".json" hidden>
+</section>
+
+<!-- BOOKMARKS -->
+<section class="panel" id="panel-bookmarks" role="tabpanel">
+  <div class="panel-head">
+    <h2 class="panel-title">Bookmarks</h2>
+    <p class="section-desc">Export the whole tree with folders intact. Import merges into what you already have and overwrites nothing.</p>
+  </div>
+  <div class="band">
+    <div class="actions">
+      <button class="btn" id="bm-export">
+        <svg class="icon"><use href="#i-export"></use></svg>Export
+      </button>
+      <button class="btn btn-primary" id="bm-import">
+        <svg class="icon"><use href="#i-import"></use></svg>Import
+      </button>
+    </div>
+    <div class="status idle" id="bm-status" role="status" aria-live="polite"></div>
+  </div>
+  <input type="file" id="bm-file" accept=".json" hidden>
+</section>
+
+<!-- HISTORY -->
+<section class="panel" id="panel-history" role="tabpanel">
+  <div class="panel-head">
+    <h2 class="panel-title">History</h2>
+    <p class="section-desc">Export browsing history as JSON. Import adds the URLs back; visit counts survive, timestamps land on import time.</p>
+  </div>
+  <div class="band">
+    <div class="field-row">
+      <label for="history-limit">Max entries</label>
+      <div class="field">
+        <input type="number" id="history-limit" value="-1" min="-1" max="1000000" step="1" inputmode="numeric" />
+        <button class="field-step up" type="button" data-for="history-limit" data-dir="1" tabindex="-1" aria-label="Increase max entries">
+          <svg class="icon"><use href="#i-up"></use></svg>
+        </button>
+        <button class="field-step down" type="button" data-for="history-limit" data-dir="-1" tabindex="-1" aria-label="Decrease max entries">
+          <svg class="icon"><use href="#i-down"></use></svg>
+        </button>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="hist-export">
+        <svg class="icon"><use href="#i-export"></use></svg>Export
+      </button>
+      <button class="btn btn-primary" id="hist-import">
+        <svg class="icon"><use href="#i-import"></use></svg>Import
+      </button>
+    </div>
+    <div class="progress-wrap" id="hist-progress" hidden>
+      <div class="progress-label">
+        <span id="hist-prog-label">Importing</span>
+        <span id="hist-prog-pct">0%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="hist-prog-fill"></div></div>
+    </div>
+    <div class="status idle" id="hist-status" role="status" aria-live="polite"></div>
+  </div>
+  <input type="file" id="hist-file" accept=".json" hidden>
+</section>
+
+<!-- COOKIES -->
+<section class="panel" id="panel-cookies" role="tabpanel">
+  <div class="panel-head">
+    <h2 class="panel-title">Cookies</h2>
+    <p class="section-desc">Export cookies from every domain. Import writes them back as they were; session cookies return with a one-year expiry.</p>
+  </div>
+  <div class="band">
+    <div class="actions">
+      <button class="btn" id="ck-export">
+        <svg class="icon"><use href="#i-export"></use></svg>Export
+      </button>
+      <button class="btn btn-primary" id="ck-import">
+        <svg class="icon"><use href="#i-import"></use></svg>Import
+      </button>
+    </div>
+    <div class="progress-wrap" id="ck-progress" hidden>
+      <div class="progress-label">
+        <span id="ck-prog-label">Importing</span>
+        <span id="ck-prog-pct">0%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="ck-prog-fill"></div></div>
+    </div>
+    <div class="status idle" id="ck-status" role="status" aria-live="polite"></div>
+  </div>
+  <input type="file" id="ck-file" accept=".json" hidden>
+</section>
+
+<!-- WEB STORAGE -->
+<section class="panel" id="panel-storage" role="tabpanel">
+  <div class="panel-head">
+    <h2 class="panel-title">Web storage</h2>
+    <p class="section-desc">Export localStorage and sessionStorage for every site with an open tab, then pick which origins to restore.</p>
+  </div>
+  <div class="band">
+    <div class="options">
+      <label class="checkbox-row">
+        <input type="checkbox" id="st-include-history">
+        <span>Also scan history for more sites</span>
+      </label>
+    </div>
+    <div class="actions" id="st-start">
+      <button class="btn" id="st-export">
+        <svg class="icon"><use href="#i-export"></use></svg>Export
+      </button>
+      <button class="btn btn-primary" id="st-import">
+        <svg class="icon"><use href="#i-import"></use></svg>Import
+      </button>
+    </div>
+    <div class="preview" id="st-preview" hidden>
+      <div class="preview-head">
+        <label class="select-all">
+          <input type="checkbox" id="st-select-all" checked>
+          <span>Select all</span>
+        </label>
+        <span class="preview-count" id="st-preview-count">0 of 0</span>
+      </div>
+      <div class="preview-list" id="st-preview-list"></div>
+      <div class="actions">
+        <button class="btn" id="st-cancel">
+          <svg class="icon"><use href="#i-close"></use></svg>Cancel
+        </button>
+        <button class="btn btn-primary" id="st-apply">
+          <svg class="icon"><use href="#i-import"></use></svg><span class="btn-label">Import</span>
+        </button>
+      </div>
+    </div>
+    <div class="progress-wrap" id="st-progress" hidden>
+      <div class="progress-label">
+        <span id="st-prog-label">Importing</span>
+        <span id="st-prog-pct">0%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="st-prog-fill"></div></div>
+    </div>
+    <p class="note">
+      <svg class="icon"><use href="#i-info"></use></svg>
+      <span>sessionStorage exists only in tabs that are open right now, so import opens a temporary tab for each closed origin.</span>
+    </p>
+    <div class="status idle" id="st-status" role="status" aria-live="polite"></div>
+  </div>
+  <input type="file" id="st-file" accept=".json" hidden>
+</section>
+
+<!-- FAQ -->
+<section class="panel" id="panel-faq" role="tabpanel">
+  <div class="panel-head">
+    <h2 class="panel-title">FAQ</h2>
+    <p class="section-desc">Answers to the questions this tool cannot fix, and the ones it can.</p>
+  </div>
+  <div class="band">
+    <div class="faq">
+
+      <details class="faq-item">
+        <summary class="faq-q">
+          <span>How to export or copy extension data</span>
+          <svg class="icon"><use href="#i-caret"></use></svg>
+        </summary>
+        <div class="faq-a">
+          <p>Each tab exports on its own. Open the tab, press <b>Export</b>, and Chrome writes a JSON file to your default download folder. The file name carries the tab and a timestamp, for example <code>cookies-20260927-141530.json</code>.</p>
+          <p>To get every kind of data, run Export once per tab: Extensions, Bookmarks, History, Cookies, and Storage. Nothing lands in one file, because the five formats have different shapes and one tab writes one file at a time.</p>
+          <p>Import reads the matching file back. Each tab refuses a file from another tab, so open the tab that matches the file.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">
+          <span>Why do Google, Meta and WhatsApp log me out after import</span>
+          <svg class="icon"><use href="#i-caret"></use></svg>
+        </summary>
+        <div class="faq-a">
+          <p>Those sites tie the session to more than the cookie. Google, Facebook, Instagram and WhatsApp each keep a signed token in <code>localStorage</code>, and part of it lives in IndexedDB. Import restores cookies, and it restores <code>localStorage</code> only for origins in a Storage file, so a Cookies-only import leaves the token missing and the site drops the session.</p>
+          <p>Three other causes hit the same result:</p>
+          <p>A cookie the site re-issues on a timer. A restored session cookie can be older than the token the server already holds, so the server wins.</p>
+          <p>A device or IP change. A moved profile, a VPN or a new network reads as a new device, and these sites end the old session on purpose.</p>
+          <p>Certificate pinning on <code>.google.com</code> and Meta subdomains. The pinned key stays in the platform keystore, not in the profile, so a cookie restored onto a fresh profile never matches it.</p>
+          <p>To restore the session, import a Storage file that was taken with the site open in a tab, in this order: close the site tabs, import the Storage file, import the Cookies file, then reload. If the site still signs you out, the token has expired on the server and a password login is the only fix. No extension resurrects a session the site already revoked.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">
+          <span>Why did an extension import open Web Store pages</span>
+          <svg class="icon"><use href="#i-caret"></use></svg>
+        </summary>
+        <div class="faq-a">
+          <p>Chrome blocks extensions from installing other extensions, so import can only enable or disable what you already have. An extension listed in the file but missing from the profile opens its Chrome Web Store page in a background tab, because the store is the only route left.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">
+          <span>Why do history entries land with today's date</span>
+          <svg class="icon"><use href="#i-caret"></use></svg>
+        </summary>
+        <div class="faq-a">
+          <p><code>chrome.history.addUrl</code> stamps the current time. The original timestamps stay in the exported JSON for reference, but no API sets them, so imported entries are added oldest first and land on import time.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">
+          <span>Why did some cookies fail to import</span>
+          <svg class="icon"><use href="#i-caret"></use></svg>
+        </summary>
+        <div class="faq-a">
+          <p>Chrome refuses a cookie it cannot legally place: a <code>Secure</code> cookie on an <code>http</code> page, a third-party cookie the page blocks, or a cookie whose domain no longer resolves. The status bar counts the failures, and the rest of the file still imports.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">
+          <span>Why does bookmark import make duplicates</span>
+          <svg class="icon"><use href="#i-caret"></use></svg>
+        </summary>
+        <div class="faq-a">
+          <p>Import merges into <b>Other Bookmarks</b> and never overwrites, so it cannot tell a fresh folder from one it made on an earlier run. Run it once per file, and clear the imported folder by hand before a second run.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">
+          <span>Why is site storage empty on export</span>
+          <svg class="icon"><use href="#i-caret"></use></svg>
+        </summary>
+        <div class="faq-a">
+          <p><code>sessionStorage</code> exists only in tabs that are open right now, so a site with no open tab exports an empty session half. Tick <b>Also scan history for more sites</b> to reach origins with no open tab. That path opens a temporary background tab, reads the persisted <code>localStorage</code>, and closes the tab, so the session half stays empty by design.</p>
+        </div>
+      </details>
+
+    </div>
+    <p class="note">
+      <svg class="icon"><use href="#i-info"></use></svg>
+      <span>Cookies hold a session, but they are not the whole session. Any site that also keeps a token in site storage asks for a password unless that storage comes back too.</span>
+    </p>
+  </div>
+</section>
+
+<script src="popup.js"></script>
+</body>
+</html>
